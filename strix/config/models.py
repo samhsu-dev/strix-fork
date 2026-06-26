@@ -59,6 +59,19 @@ DEFAULT_MODEL_RETRY = ModelRetrySettings(
     ),
 )
 
+RECOMMENDED_MODEL_NAMES = (
+    "openai/gpt-5.4",
+    "anthropic/claude-sonnet-4-6",
+    "vertex_ai/gemini-3-pro-preview",
+)
+
+FRONTIER_MODEL_PREFIXES = (
+    "gpt-5",
+    "claude-opus-4",
+    "claude-sonnet-4",
+    "gemini-3",
+)
+
 
 def configure_sdk_model_defaults(settings: Settings) -> None:
     """Apply Strix config to SDK-native defaults."""
@@ -152,6 +165,33 @@ def model_supports_reasoning(model_name: str) -> bool:
     if entry is None and "/" in name:
         entry = litellm.model_cost.get(name.rsplit("/", 1)[1])
     return bool(entry and entry.get("supports_reasoning"))
+
+
+def is_recommended_or_frontier_model(model_name: str) -> bool:
+    """Return whether a model is recommended or in a frontier model family."""
+    return any(
+        _is_recommended_or_frontier_candidate(candidate)
+        for candidate in _normalized_model_candidates(model_name)
+    )
+
+
+def _normalized_model_candidates(model_name: str) -> tuple[str, ...]:
+    name = model_name.strip().lower()
+    if not name:
+        return ()
+    for prefix in ("litellm/", "any-llm/"):
+        if name.startswith(prefix):
+            name = name[len(prefix) :]
+            break
+    if "/" not in name:
+        return (name,)
+    return (name, name.rsplit("/", 1)[1])
+
+
+def _is_recommended_or_frontier_candidate(model_name: str) -> bool:
+    if model_name in RECOMMENDED_MODEL_NAMES:
+        return True
+    return any(model_name.startswith(prefix) for prefix in FRONTIER_MODEL_PREFIXES)
 
 
 def is_known_openai_bare_model(model_name: str) -> bool:

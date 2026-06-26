@@ -23,9 +23,11 @@ from strix.config import (
     persist_current,
 )
 from strix.config.models import (
+    RECOMMENDED_MODEL_NAMES,
     StrixProvider,
     configure_sdk_model_defaults,
     is_known_openai_bare_model,
+    is_recommended_or_frontier_model,
 )
 from strix.core.paths import run_dir_for, runtime_state_dir
 from strix.interface.cli import run_cli
@@ -254,6 +256,32 @@ async def warm_up_llm() -> None:
             )
             sys.exit(1)
 
+        if raw_model and not is_recommended_or_frontier_model(raw_model):
+            warn_text = Text()
+            warn_text.append("MODEL QUALITY WARNING", style="bold yellow")
+            warn_text.append("\n\n", style="white")
+            warn_text.append(f"'{raw_model}'", style="bold cyan")
+            warn_text.append(
+                " is not a recommended frontier model for Strix.\nSecurity scans work best with:\n",
+                style="white",
+            )
+            for recommended_model in RECOMMENDED_MODEL_NAMES:
+                warn_text.append(f"• {recommended_model}\n", style="bold cyan")
+            warn_text.append(
+                "\nYou can continue, but weaker models may miss vulnerabilities "
+                "or produce lower-quality findings.",
+                style="white",
+            )
+            console.print(
+                Panel(
+                    warn_text,
+                    title="[bold white]STRIX",
+                    title_align="left",
+                    border_style="yellow",
+                    padding=(1, 2),
+                ),
+            )
+
         model = StrixProvider().get_model(raw_model)
         await asyncio.wait_for(
             model.get_response(
@@ -310,6 +338,7 @@ def _positive_budget(value: str) -> float:
     except ValueError as exc:
         raise argparse.ArgumentTypeError(f"invalid float value: {value!r}") from exc
     import math
+
     if not math.isfinite(budget) or budget <= 0:
         raise argparse.ArgumentTypeError("must be a finite number greater than 0")
     return budget
