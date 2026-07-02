@@ -40,12 +40,28 @@ AWS misconfigurations frequently expose credentials, data, and lateral movement 
 - Hardcoded keys in source, mobile apps, JavaScript bundles
 
 **Unauthenticated Enumeration**
+
+Use two separate checks — they answer different questions and must not be conflated:
+
+**1. Bucket existence (does the name resolve?)**
+
+Goal: learn whether a bucket name exists in AWS, without needing `s3:ListBucket`.
+- `head-bucket` or `curl -I` HTTP status is the signal — not `aws s3 ls`.
+- `403 Forbidden` → bucket exists but you lack access (private or wrong account).
+- `404 Not Found` → bucket does not exist in that region, or name is wrong.
+
 ```
-# S3 bucket existence (403 = exists but private, 404 = doesn't exist or different region)
 aws s3api head-bucket --bucket target-bucket --no-sign-request 2>&1
 curl -I https://target-bucket.s3.amazonaws.com/
+```
 
-# Public listing (confirms s3:ListBucket is granted to AllUsers)
+**2. Public listing (is ListBucket granted to anonymous users?)**
+
+Goal: confirm `s3:ListBucket` is publicly granted — a separate and stronger finding than existence alone.
+- Only run `aws s3 ls` for this step; a successful listing returns object keys/prefixes.
+- Failure here does not disprove existence (a private bucket still returns 403 on list).
+
+```
 aws s3 ls s3://target-bucket --no-sign-request
 ```
 
