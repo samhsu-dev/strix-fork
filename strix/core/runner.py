@@ -28,7 +28,7 @@ from strix.core.execution import (
 from strix.core.execution import (
     spawn_child_agent as start_child_agent,
 )
-from strix.core.hooks import BudgetExceededError, ReportUsageHooks
+from strix.core.hooks import BudgetExceededError, CompositeRunHooks, ReportUsageHooks
 from strix.core.inputs import (
     DEFAULT_MAX_TURNS,
     build_root_task,
@@ -39,9 +39,12 @@ from strix.core.paths import run_dir_for, runtime_state_dir
 from strix.core.sessions import open_agent_session
 from strix.runtime import session_manager
 from strix.telemetry.logging import set_scan_id, setup_scan_logging
+from strix.telemetry.digest import build_digest
+from strix.telemetry.trace import TRACE_FILENAME, TraceWriter, TracingHooks, tracing_enabled
 
 
 if TYPE_CHECKING:
+    from agents.lifecycle import RunHooks
     from agents.memory import SQLiteSession
     from agents.result import RunResultBase
 
@@ -148,6 +151,7 @@ async def run_strix_scan(
     logger.info("Sandbox ready for scan %s", scan_id)
 
     sessions_to_close: list[SQLiteSession] = []
+    trace_writer: TraceWriter | None = None
 
     try:
         targets = scan_config.get("targets") or []
@@ -166,7 +170,13 @@ async def run_strix_scan(
             sandbox=SandboxRunConfig(client=bundle["client"], session=bundle["session"]),
             trace_include_sensitive_data=False,
         )
-        hooks = ReportUsageHooks(model=resolved_model, max_budget_usd=max_budget_usd)
+        hooks: RunHooks[dict[str, Any]] = ReportUsageHooks(
+            model=resolved_model, max_budget_usd=max_budget_usd
+        )
+        if tracing_enabled():
+            trace_writer = TraceWriter(run_dir / TRACE_FILENAME)
+            hooks = CompositeRunHooks([hooks, TracingHooks(trace_writer)])
+            logger.info("Agent tracing enabled: %s", run_dir / TRACE_FILENAME)
 
         scope_context = build_scope_context(scan_config)
 
@@ -330,6 +340,11 @@ async def run_strix_scan(
                 await coordinator.set_status(root_id, "failed")
         raise
     finally:
+        if trace_writer is not None:
+            with contextlib.suppress(Exception):
+                trace_writer.close()
+            with contextlib.suppress(Exception):
+                build_digest(run_dir)
         for s in sessions_to_close:
             with contextlib.suppress(Exception):
                 s.close()
