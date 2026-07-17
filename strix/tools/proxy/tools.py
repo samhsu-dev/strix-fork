@@ -247,6 +247,11 @@ async def view_request(
     client = _ctx_client(ctx)
     if client is None:
         return _no_client()
+    if not str(request_id).isdigit():
+        return json.dumps(
+            {"success": False, "error": f"Invalid request ID {request_id!r}; Caido requires a numeric ID"},
+            ensure_ascii=False,
+        )
 
     try:
         result = await caido_api.get_request_with_client(client, request_id, part=part)
@@ -362,6 +367,11 @@ async def repeat_request(
     client = _ctx_client(ctx)
     if client is None:
         return _no_client()
+    if not str(request_id).isdigit():
+        return json.dumps(
+            {"success": False, "error": f"Invalid request ID {request_id!r}; Caido requires a numeric ID"},
+            ensure_ascii=False,
+        )
     mods = modifications or {}
 
     try:
