@@ -5,6 +5,7 @@ from __future__ import annotations
 import contextlib
 import json
 import logging
+import time
 import uuid
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
@@ -38,6 +39,7 @@ from strix.core.inputs import (
 from strix.core.paths import run_dir_for, runtime_state_dir
 from strix.core.sessions import open_agent_session
 from strix.runtime import session_manager
+from strix.telemetry.events import ScanEventWriter
 from strix.telemetry.logging import set_scan_id, setup_scan_logging
 
 
@@ -75,6 +77,15 @@ async def run_strix_scan(
     state_dir.mkdir(parents=True, exist_ok=True)
     teardown_logging = setup_scan_logging(run_dir)
     set_scan_id(scan_id)
+    event_writer = ScanEventWriter(run_dir / "events.jsonl", run_id=scan_id)
+    if event_sink is None:
+        event_sink = event_writer
+    else:
+        upstream_event_sink = event_sink
+
+        def event_sink(agent_id: str, event: Any) -> None:
+            event_writer(agent_id, event)
+            upstream_event_sink(agent_id, event)
 
     agents_path = state_dir / "agents.json"
     agents_db = state_dir / "agents.db"
@@ -103,6 +114,7 @@ async def run_strix_scan(
     if coordinator is None:
         coordinator = AgentCoordinator()
     coordinator.set_snapshot_path(agents_path)
+    event_writer.set_coordinator(coordinator)
 
     from strix.tools.notes.tools import hydrate_notes_from_disk
     from strix.tools.todo.tools import hydrate_todos_from_disk
@@ -148,6 +160,8 @@ async def run_strix_scan(
     logger.info("Sandbox ready for scan %s", scan_id)
 
     sessions_to_close: list[SQLiteSession] = []
+    run_start = time.monotonic()
+    run_status = "completed"
 
     try:
         targets = scan_config.get("targets") or []
@@ -155,6 +169,17 @@ async def run_strix_scan(
         is_whitebox = any(t.get("type") == "local_code" for t in targets)
         skills = list(scan_config.get("skills") or [])
         root_task = build_root_task(scan_config)
+        event_writer.run_started(
+            model=resolved_model,
+            target=", ".join(
+                str(t.get("target") or t.get("path") or t.get("type") or "") for t in targets
+            ),
+            params={
+                "scan_mode": scan_mode,
+                "max_turns": max_turns,
+                "max_budget_usd": max_budget_usd,
+            },
+        )
         model_settings = make_model_settings(
             settings.llm.reasoning_effort,
             model_name=resolved_model,
@@ -303,6 +328,7 @@ async def run_strix_scan(
                 )
         return result  # noqa: TRY300
     except BudgetExceededError as exc:
+        run_status = "cancelled"
         logger.info("Scan %s stopped: %s", scan_id, exc)
         if root_id is not None:
             await coordinator.cancel_descendants(root_id)
@@ -310,6 +336,7 @@ async def run_strix_scan(
                 await coordinator.set_status(root_id, "stopped")
         return None
     except RateLimitError as exc:
+        run_status = "cancelled"
         logger.warning(
             "Scan %s stopped: persistent rate limit from the LLM provider (%s). "
             "Resume with 'strix --resume %s' once the limit clears.",
@@ -323,6 +350,7 @@ async def run_strix_scan(
                 await coordinator.set_status(root_id, "stopped")
         return None
     except BaseException:
+        run_status = "failed"
         logger.exception("Strix scan %s failed", scan_id)
         if root_id is not None:
             await coordinator.cancel_descendants(root_id)
@@ -340,3 +368,6 @@ async def run_strix_scan(
             await session_manager.cleanup(scan_id)
         logger.info("Strix scan %s done", scan_id)
         teardown_logging()
+        with contextlib.suppress(Exception):
+            event_writer.run_finished(status=run_status, duration_s=time.monotonic() - run_start)
+        event_writer.close()

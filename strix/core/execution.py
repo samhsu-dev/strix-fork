@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import traceback
 import uuid
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any, cast
@@ -331,6 +332,24 @@ async def _run_noninteractive_until_lifecycle(
         )
 
 
+def _emit_agent_error(
+    event_sink: StreamEventSink | None, agent_id: str, exc: Exception
+) -> None:
+    """Record a terminal agent failure in the event stream before it propagates.
+
+    Records only: execution, status, and retry behavior are unchanged. Without
+    this, a crashed or aborted turn leaves no agent-level event and the failure
+    detail is lost from the unified stream.
+    """
+    if event_sink is None:
+        return
+    detail = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
+    try:
+        event_sink(agent_id, {"type": "agent_error", "data": detail})
+    except Exception:
+        logger.exception("stream event sink failed for error %s", agent_id)
+
+
 async def _run_cycle(  # noqa: PLR0912, PLR0915
     agent: Any,
     coordinator: AgentCoordinator,
@@ -345,6 +364,12 @@ async def _run_cycle(  # noqa: PLR0912, PLR0915
     event_sink: StreamEventSink | None,
     hooks: RunHooks[dict[str, Any]] | None,
 ) -> RunResultBase | None:
+    if event_sink is not None:
+        try:
+            # Keep inputs in the same normalized stream as SDK outputs.
+            event_sink(agent_id, {"type": "agent_input", "data": input_data})
+        except Exception:
+            logger.exception("stream event sink failed for input %s", agent_id)
     image_strips = 0
     while True:
         try:
@@ -417,6 +442,7 @@ async def _run_cycle(  # noqa: PLR0912, PLR0915
                     )
                     input_data = []
                     continue
+            _emit_agent_error(event_sink, agent_id, exc)
             if not interactive:
                 raise
             if isinstance(exc, MaxTurnsExceeded):
