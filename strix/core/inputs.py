@@ -113,7 +113,11 @@ def make_model_settings(
     model_name: str,
 ) -> ModelSettings:
     model_settings = ModelSettings(
-        parallel_tool_calls=False,
+        # Bedrock Converse proxies reject an explicit
+        # ``parallel_tool_calls=false`` alongside tools. Leaving this unset
+        # preserves tool support while allowing the provider to choose its
+        # supported behavior.
+        parallel_tool_calls=None,
         retry=DEFAULT_MODEL_RETRY,
         include_usage=True,
     )
